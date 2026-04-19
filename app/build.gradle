@@ -3,6 +3,7 @@ plugins {
 }
 
 android {
+    namespace "com.example.depthai_android_jni_example"
     compileSdk 31
 
     defaultConfig {
@@ -38,11 +39,20 @@ android {
     externalNativeBuild {
         cmake {
             path file('src/CMakeLists.txt')
-            version '3.10.2'
+            version '3.22.1'
         }
     }
     buildFeatures {
         viewBinding true
+    }
+    sourceSets {
+        main {
+            jniLibs.srcDirs = [
+                    'src/main/libs/depthai',
+                    'src/main/libs/opencv',
+                    'src/main/libs/libusb'
+            ]
+        }
     }
 }
 

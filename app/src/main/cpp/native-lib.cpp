@@ -38,7 +38,7 @@ Java_com_example_depthai_1android_1jni_1example_MainActivity_startDevice(JNIEnv 
     log("libusb_set_option ANDROID_JAVAVM: %s", libusb_strerror(r));
 
     // Connect to device and start pipeline
-    device = make_shared<dai::Device>(dai::OpenVINO::VERSION_2021_4, dai::UsbSpeed::HIGH);
+    device = make_shared<dai::Device>(dai::OpenVINO::VERSION_2021_4, dai::UsbSpeed::SUPER_PLUS); // USB 3.1 speed
 
     bool oakD = device->getConnectedCameras().size() == 3;
 
@@ -182,6 +182,16 @@ Java_com_example_depthai_1android_1jni_1example_MainActivity_depthFromJNI(
 
     env->ReleaseIntArrayElements(result, result_e, NULL);
     return result;
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_depthai_1android_1jni_1example_MainActivity_stopDevice(JNIEnv* env, jobject thiz) {
+    if(qRgb) qRgb.reset();
+    if(qDet) qDet.reset();
+    if(qDepth) qDepth.reset();
+    if(device) device.reset();
+    detection_img.release();
 }
 
 

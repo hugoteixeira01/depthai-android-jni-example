@@ -10,8 +10,10 @@ import android.view.WindowManager
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.Spinner
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.example.depthai_android_jni_example.databinding.ActivityMainBinding
 import java.io.IOException
@@ -32,20 +34,28 @@ class MainActivity : AppCompatActivity() {
         private const val FRAME_PERIOD = 30L
 
         private val MODEL_LABEL_SEPARATOR = Regex("[_-]+")
+
+        private const val STREAM_RGB = 0
+        private const val STREAM_DEPTH = 1
+        private const val STREAM_COUNT = 2
     }
 
     private data class ModelOption(val label: String, val assetPath: String)
 
     private var modelOptions: List<ModelOption> = emptyList()
 
-    private lateinit var rgbImageView: ImageView
-    private lateinit var depthImageView: ImageView
+    private lateinit var previewImageView: ImageView
+    private lateinit var leftArrow: ImageButton
+    private lateinit var rightArrow: ImageButton
+    private lateinit var streamLabel: TextView
+
     private lateinit var rgbImage: Bitmap
     private lateinit var depthImage: Bitmap
 
     private var running = true
     private var cameraConnected = false
     private var selectedModelIndex = AdapterView.INVALID_POSITION
+    private var selectedStreamIndex = STREAM_RGB
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -54,21 +64,22 @@ class MainActivity : AppCompatActivity() {
             if (running) {
                 if (cameraConnected) {
                     val rgb = imageFromJNI()
-                    if (rgb != null && rgb.size > 0) {
-                        rgbImage.setPixels(rgb, 0, RGB_WIDTH, 0, 0, RGB_WIDTH, RGB_HEIGHT)
-                        rgbImageView.setImageBitmap(rgbImage)
-                    }
-
                     val detectionsImage = detectionImageFromJNI()
-                    if (detectionsImage != null && detectionsImage.size > 0) {
-                        rgbImage.setPixels(detectionsImage, 0, RGB_WIDTH, 0, 0, RGB_WIDTH, RGB_HEIGHT)
-                        rgbImageView.setImageBitmap(rgbImage)
-                    }
-
                     val depth = depthFromJNI()
-                    if (depth != null && depth.size > 0) {
-                        depthImage.setPixels(depth, 0, DISPARITY_WIDTH, 0, 0, DISPARITY_WIDTH, DISPARITY_HEIGHT)
-                        depthImageView.setImageBitmap(depthImage)
+
+                    if (selectedStreamIndex == STREAM_RGB) {
+                        if (rgb != null && rgb.isNotEmpty()) {
+                            rgbImage.setPixels(rgb, 0, RGB_WIDTH, 0, 0, RGB_WIDTH, RGB_HEIGHT)
+                        }
+                        if (detectionsImage != null && detectionsImage.isNotEmpty()) {
+                            rgbImage.setPixels(detectionsImage, 0, RGB_WIDTH, 0, 0, RGB_WIDTH, RGB_HEIGHT)
+                        }
+                        previewImageView.setImageBitmap(rgbImage)
+                    } else if (selectedStreamIndex == STREAM_DEPTH) {
+                        if (depth != null && depth.isNotEmpty()) {
+                            depthImage.setPixels(depth, 0, DISPARITY_WIDTH, 0, 0, DISPARITY_WIDTH, DISPARITY_HEIGHT)
+                        }
+                        previewImageView.setImageBitmap(depthImage)
                     }
                 }
 
@@ -86,8 +97,10 @@ class MainActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(binding.root)
 
-        rgbImageView = binding.rgbImageView
-        depthImageView = binding.depthImageView
+        previewImageView = binding.previewImageView
+        leftArrow = binding.leftArrow
+        rightArrow = binding.rightArrow
+        streamLabel = binding.streamLabel
 
         rgbImage = Bitmap.createBitmap(RGB_WIDTH, RGB_HEIGHT, Bitmap.Config.ARGB_8888)
         depthImage = Bitmap.createBitmap(DISPARITY_WIDTH, DISPARITY_HEIGHT, Bitmap.Config.ARGB_8888)
@@ -96,6 +109,7 @@ class MainActivity : AppCompatActivity() {
             running = savedInstanceState.getBoolean("running", true)
             cameraConnected = savedInstanceState.getBoolean("cameraConnected", false)
             selectedModelIndex = savedInstanceState.getInt("selectedModelIndex", AdapterView.INVALID_POSITION)
+            selectedStreamIndex = savedInstanceState.getInt("selectedStreamIndex", STREAM_RGB)
         }
 
         val savedSelectedModelPath = savedInstanceState?.getString("selectedModelPath")
@@ -135,6 +149,20 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Arrow handlers
+        leftArrow.setOnClickListener {
+            if (selectedStreamIndex > 0) {
+                selectedStreamIndex--
+                updateCarouselControls()
+            }
+        }
+        rightArrow.setOnClickListener {
+            if (selectedStreamIndex < STREAM_COUNT - 1) {
+                selectedStreamIndex++
+                updateCarouselControls()
+            }
+        }
+
         binding.connectCameraButton?.let { button: Button ->
             button.setOnClickListener {
                 if (cameraConnected) {
@@ -149,9 +177,11 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 updateControls(button, modelSpinner)
+                updateCarouselControls()
             }
 
             updateControls(button, modelSpinner)
+            updateCarouselControls()
         }
 
         frameRunnable.run()
@@ -171,6 +201,7 @@ class MainActivity : AppCompatActivity() {
         outState.putBoolean("running", running)
         outState.putBoolean("cameraConnected", cameraConnected)
         outState.putInt("selectedModelIndex", selectedModelIndex)
+        outState.putInt("selectedStreamIndex", selectedStreamIndex)
         modelOptions.getOrNull(selectedModelIndex)?.assetPath?.let { selectedModelPath ->
             outState.putString("selectedModelPath", selectedModelPath)
         }
@@ -183,12 +214,27 @@ class MainActivity : AppCompatActivity() {
             button.setText("Disconnect Camera")
             button.isEnabled = true
             modelSpinner?.isEnabled = false
+            leftArrow.isEnabled = true
+            rightArrow.isEnabled = true
         } else {
             val hasModelOptions = modelOptions.isNotEmpty()
             button.setText(if (hasModelOptions) "Connect Camera" else "No model blobs found")
             button.isEnabled = hasModelOptions
             modelSpinner?.isEnabled = hasModelOptions
+            leftArrow.isEnabled = false
+            rightArrow.isEnabled = false
         }
+    }
+
+    private fun updateCarouselControls() {
+        val label = when (selectedStreamIndex) {
+            STREAM_RGB -> "RGB 1/2"
+            STREAM_DEPTH -> "Depth 2/2"
+            else -> "Stream"
+        }
+        streamLabel.text = label
+        leftArrow.isEnabled = (selectedStreamIndex > 0) && cameraConnected
+        rightArrow.isEnabled = (selectedStreamIndex < STREAM_COUNT - 1) && cameraConnected
     }
 
     private fun findModelOptions(): List<ModelOption> {

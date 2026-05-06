@@ -245,3 +245,22 @@ extern "C" jintArray cvMatToBmpArray(JNIEnv* env, const cv::Mat& input_rgb_img)
     return result;
 }
 
+extern "C" jintArray grayMatToBmpArray(JNIEnv* env, const cv::Mat& input_gray_img)
+{
+    auto imgData = input_gray_img.data;
+
+    uint image_size = input_gray_img.cols * input_gray_img.rows;
+
+    jintArray result = env->NewIntArray(image_size);
+    jint* result_e = env->GetIntArrayElements(result, 0);
+
+    for (uint i = 0; i < image_size; i++)
+    {
+        int value = imgData[i];
+        result_e[i] = 255 << 24 | (value << 16) | (value << 8) | value;
+    }
+
+    env->ReleaseIntArrayElements(result, result_e, 0);
+    return result;
+}
+

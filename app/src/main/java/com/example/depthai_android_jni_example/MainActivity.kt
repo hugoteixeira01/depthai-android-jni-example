@@ -29,33 +29,42 @@ class MainActivity : AppCompatActivity() {
         private const val BLOB_EXTENSION = ".blob"
         private const val RGB_WIDTH = 416
         private const val RGB_HEIGHT = 416
-        private const val DISPARITY_WIDTH = 640
-        private const val DISPARITY_HEIGHT = 400
+        private const val STEREO_WIDTH = 640
+        private const val STEREO_HEIGHT = 400
         private const val FRAME_PERIOD = 30L
 
         private val MODEL_LABEL_SEPARATOR = Regex("[_-]+")
-
-        private const val STREAM_RGB = 0
-        private const val STREAM_DEPTH = 1
-        private const val STREAM_COUNT = 2
     }
 
     private data class ModelOption(val label: String, val assetPath: String)
 
+    private data class StreamOption(
+        val label: String,
+        val width: Int,
+        val height: Int,
+        val bitmap: Bitmap,
+        val fetchFrame: () -> IntArray?
+    )
+
     private var modelOptions: List<ModelOption> = emptyList()
+    private var streamOptions: List<StreamOption> = emptyList()
 
     private lateinit var previewImageView: ImageView
     private lateinit var leftArrow: ImageButton
     private lateinit var rightArrow: ImageButton
     private lateinit var streamLabel: TextView
 
-    private lateinit var rgbImage: Bitmap
-    private lateinit var depthImage: Bitmap
+    private lateinit var rgbBitmap: Bitmap
+    private lateinit var rgbOverlayBitmap: Bitmap
+    private lateinit var disparityBitmap: Bitmap
+    private lateinit var rectifiedLeftBitmap: Bitmap
+    private lateinit var rectifiedRightBitmap: Bitmap
+    private lateinit var confidenceBitmap: Bitmap
 
     private var running = true
     private var cameraConnected = false
     private var selectedModelIndex = AdapterView.INVALID_POSITION
-    private var selectedStreamIndex = STREAM_RGB
+    private var selectedStreamIndex = 0
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -63,23 +72,11 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             if (running) {
                 if (cameraConnected) {
-                    val rgb = imageFromJNI()
-                    val detectionsImage = detectionImageFromJNI()
-                    val depth = depthFromJNI()
-
-                    if (selectedStreamIndex == STREAM_RGB) {
-                        if (rgb != null && rgb.isNotEmpty()) {
-                            rgbImage.setPixels(rgb, 0, RGB_WIDTH, 0, 0, RGB_WIDTH, RGB_HEIGHT)
-                        }
-                        if (detectionsImage != null && detectionsImage.isNotEmpty()) {
-                            rgbImage.setPixels(detectionsImage, 0, RGB_WIDTH, 0, 0, RGB_WIDTH, RGB_HEIGHT)
-                        }
-                        previewImageView.setImageBitmap(rgbImage)
-                    } else if (selectedStreamIndex == STREAM_DEPTH) {
-                        if (depth != null && depth.isNotEmpty()) {
-                            depthImage.setPixels(depth, 0, DISPARITY_WIDTH, 0, 0, DISPARITY_WIDTH, DISPARITY_HEIGHT)
-                        }
-                        previewImageView.setImageBitmap(depthImage)
+                    val currentStream = streamOptions.getOrNull(selectedStreamIndex)
+                    val frame = currentStream?.fetchFrame?.invoke()
+                    if (currentStream != null && frame != null && frame.isNotEmpty()) {
+                        currentStream.bitmap.setPixels(frame, 0, currentStream.width, 0, 0, currentStream.width, currentStream.height)
+                        previewImageView.setImageBitmap(currentStream.bitmap)
                     }
                 }
 
@@ -93,7 +90,6 @@ class MainActivity : AppCompatActivity() {
 
         val binding = ActivityMainBinding.inflate(layoutInflater)
         requestWindowFeature(Window.FEATURE_NO_TITLE)
-        window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(binding.root)
 
@@ -102,14 +98,18 @@ class MainActivity : AppCompatActivity() {
         rightArrow = binding.rightArrow
         streamLabel = binding.streamLabel
 
-        rgbImage = Bitmap.createBitmap(RGB_WIDTH, RGB_HEIGHT, Bitmap.Config.ARGB_8888)
-        depthImage = Bitmap.createBitmap(DISPARITY_WIDTH, DISPARITY_HEIGHT, Bitmap.Config.ARGB_8888)
+        rgbBitmap = Bitmap.createBitmap(RGB_WIDTH, RGB_HEIGHT, Bitmap.Config.ARGB_8888)
+        rgbOverlayBitmap = Bitmap.createBitmap(RGB_WIDTH, RGB_HEIGHT, Bitmap.Config.ARGB_8888)
+        disparityBitmap = Bitmap.createBitmap(STEREO_WIDTH, STEREO_HEIGHT, Bitmap.Config.ARGB_8888)
+        rectifiedLeftBitmap = Bitmap.createBitmap(STEREO_WIDTH, STEREO_HEIGHT, Bitmap.Config.ARGB_8888)
+        rectifiedRightBitmap = Bitmap.createBitmap(STEREO_WIDTH, STEREO_HEIGHT, Bitmap.Config.ARGB_8888)
+        confidenceBitmap = Bitmap.createBitmap(STEREO_WIDTH, STEREO_HEIGHT, Bitmap.Config.ARGB_8888)
 
         if (savedInstanceState != null) {
             running = savedInstanceState.getBoolean("running", true)
             cameraConnected = savedInstanceState.getBoolean("cameraConnected", false)
             selectedModelIndex = savedInstanceState.getInt("selectedModelIndex", AdapterView.INVALID_POSITION)
-            selectedStreamIndex = savedInstanceState.getInt("selectedStreamIndex", STREAM_RGB)
+            selectedStreamIndex = savedInstanceState.getInt("selectedStreamIndex", 0)
         }
 
         val savedSelectedModelPath = savedInstanceState?.getString("selectedModelPath")
@@ -144,45 +144,58 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 override fun onNothingSelected(parent: AdapterView<*>?) {
-                    // Keep previously selected model index.
+                    // Keep the previous selection.
                 }
             }
         }
 
-        // Arrow handlers
         leftArrow.setOnClickListener {
             if (selectedStreamIndex > 0) {
                 selectedStreamIndex--
                 updateCarouselControls()
             }
         }
+
         rightArrow.setOnClickListener {
-            if (selectedStreamIndex < STREAM_COUNT - 1) {
+            if (selectedStreamIndex < streamOptions.lastIndex) {
                 selectedStreamIndex++
                 updateCarouselControls()
             }
         }
 
-        binding.connectCameraButton?.let { button: Button ->
+        val connectButton = binding.connectCameraButton
+        connectButton?.let { button: Button ->
             button.setOnClickListener {
                 if (cameraConnected) {
-                    stopDevice()
-                    cameraConnected = false
+                    disconnectCamera()
                 } else {
                     val selectedModelPath = modelOptions.getOrNull(selectedModelIndex)?.assetPath
                     if (selectedModelPath != null) {
-                        startDevice(selectedModelPath, RGB_WIDTH, RGB_HEIGHT)
-                        cameraConnected = true
+                        connectCamera(selectedModelPath)
                     }
                 }
 
                 updateControls(button, modelSpinner)
                 updateCarouselControls()
             }
-
-            updateControls(button, modelSpinner)
-            updateCarouselControls()
         }
+
+        if (cameraConnected) {
+            val selectedModelPath = modelOptions.getOrNull(selectedModelIndex)?.assetPath
+            if (selectedModelPath != null) {
+                connectCamera(selectedModelPath)
+            } else {
+                cameraConnected = false
+                streamOptions = createStreamOptions(false)
+                selectedStreamIndex = selectedStreamIndex.coerceIn(0, streamOptions.lastIndex)
+            }
+        } else {
+            streamOptions = createStreamOptions(false)
+            selectedStreamIndex = selectedStreamIndex.coerceIn(0, streamOptions.lastIndex)
+        }
+
+        connectButton?.let { updateControls(it, modelSpinner) }
+        updateCarouselControls()
 
         frameRunnable.run()
     }
@@ -190,8 +203,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         if (cameraConnected) {
-            stopDevice()
-            cameraConnected = false
+            disconnectCamera()
         }
         running = false
     }
@@ -209,39 +221,70 @@ class MainActivity : AppCompatActivity() {
 
     fun getAssetManager(): AssetManager = assets
 
+    private fun connectCamera(modelPath: String) {
+        startDevice(modelPath, RGB_WIDTH, RGB_HEIGHT)
+        cameraConnected = true
+        streamOptions = createStreamOptions(hasStereoFromJNI())
+        selectedStreamIndex = selectedStreamIndex.coerceIn(0, streamOptions.lastIndex)
+    }
+
+    private fun disconnectCamera() {
+        stopDevice()
+        cameraConnected = false
+        streamOptions = createStreamOptions(false)
+        selectedStreamIndex = 0
+    }
+
     private fun updateControls(button: Button, modelSpinner: Spinner?) {
         if (cameraConnected) {
             button.setText("Disconnect Camera")
             button.isEnabled = true
             modelSpinner?.isEnabled = false
-            leftArrow.isEnabled = true
-            rightArrow.isEnabled = true
         } else {
             val hasModelOptions = modelOptions.isNotEmpty()
             button.setText(if (hasModelOptions) "Connect Camera" else "No model blobs found")
             button.isEnabled = hasModelOptions
             modelSpinner?.isEnabled = hasModelOptions
-            leftArrow.isEnabled = false
-            rightArrow.isEnabled = false
         }
     }
 
     private fun updateCarouselControls() {
-        val label = when (selectedStreamIndex) {
-            STREAM_RGB -> "RGB 1/2"
-            STREAM_DEPTH -> "Depth 2/2"
-            else -> "Stream"
+        val currentStream = streamOptions.getOrNull(selectedStreamIndex)
+        if (currentStream != null) {
+            streamLabel.text = "${currentStream.label} ${selectedStreamIndex + 1}/${streamOptions.size}"
+        } else {
+            streamLabel.text = "Stream"
         }
-        streamLabel.text = label
-        leftArrow.isEnabled = (selectedStreamIndex > 0) && cameraConnected
-        rightArrow.isEnabled = (selectedStreamIndex < STREAM_COUNT - 1) && cameraConnected
+
+        leftArrow.isEnabled = cameraConnected && selectedStreamIndex > 0
+        rightArrow.isEnabled = cameraConnected && selectedStreamIndex < streamOptions.lastIndex
+    }
+
+    private fun createStreamOptions(stereoSupported: Boolean): List<StreamOption> {
+        return buildList {
+            add(StreamOption("RGB", RGB_WIDTH, RGB_HEIGHT, rgbBitmap) { imageFromJNI() })
+            add(StreamOption("Detections", RGB_WIDTH, RGB_HEIGHT, rgbOverlayBitmap) { captureRgbOverlayFrame() })
+
+            if (stereoSupported) {
+                add(StreamOption("Disparity", STEREO_WIDTH, STEREO_HEIGHT, disparityBitmap) { depthFromJNI() })
+                add(StreamOption("Rectified Left", STEREO_WIDTH, STEREO_HEIGHT, rectifiedLeftBitmap) { rectifiedLeftFromJNI() })
+                add(StreamOption("Rectified Right", STEREO_WIDTH, STEREO_HEIGHT, rectifiedRightBitmap) { rectifiedRightFromJNI() })
+                add(StreamOption("Confidence Map", STEREO_WIDTH, STEREO_HEIGHT, confidenceBitmap) { confidenceMapFromJNI() })
+            }
+        }
+    }
+
+    private fun captureRgbOverlayFrame(): IntArray? {
+        val rgb = imageFromJNI() ?: return null
+        val overlay = detectionImageFromJNI()
+        return overlay?.takeIf { it.isNotEmpty() } ?: rgb
     }
 
     private fun findModelOptions(): List<ModelOption> {
         return try {
             findBlobAssetPaths("")
                 .map { assetPath -> ModelOption(formatModelLabel(assetPath), assetPath) }
-                .sortedBy { it.assetPath.lowercase(Locale.US) }
+                .sortedBy { it.assetPath.toLowerCase(Locale.US) }
         } catch (exception: IOException) {
             emptyList()
         }
@@ -272,7 +315,11 @@ class MainActivity : AppCompatActivity() {
 
     external fun startDevice(modelPath: String, rgbWidth: Int, rgbHeight: Int)
     external fun stopDevice()
+    external fun hasStereoFromJNI(): Boolean
     external fun imageFromJNI(): IntArray?
     external fun detectionImageFromJNI(): IntArray?
     external fun depthFromJNI(): IntArray?
+    external fun rectifiedLeftFromJNI(): IntArray?
+    external fun rectifiedRightFromJNI(): IntArray?
+    external fun confidenceMapFromJNI(): IntArray?
 }

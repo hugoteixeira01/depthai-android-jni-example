@@ -11,7 +11,7 @@
 using namespace std;
 
 std::shared_ptr<dai::Device> device;
-shared_ptr<dai::DataOutputQueue> qRgb, qDepth, qDet;
+shared_ptr<dai::DataOutputQueue> qRgb, qDepth, qDet, qRectLeft, qRectRight, qConf;
 cv::Mat detection_img;
 
 // Neural network
@@ -99,7 +99,13 @@ Java_com_example_depthai_1android_1jni_1example_MainActivity_startDevice(JNIEnv 
         auto monoRight = pipeline.create<dai::node::MonoCamera>();
         auto stereo = pipeline.create<dai::node::StereoDepth>();
         auto xoutDepth = pipeline.create<dai::node::XLinkOut>();
+        auto xoutRectLeft = pipeline.create<dai::node::XLinkOut>();
+        auto xoutRectRight = pipeline.create<dai::node::XLinkOut>();
+        auto xoutConfidence = pipeline.create<dai::node::XLinkOut>();
         xoutDepth->setStreamName("depth");
+        xoutRectLeft->setStreamName("rectifiedLeft");
+        xoutRectRight->setStreamName("rectifiedRight");
+        xoutConfidence->setStreamName("confidenceMap");
         // Properties
         monoLeft->setResolution(dai::MonoCameraProperties::SensorResolution::THE_400_P);
         monoLeft->setBoardSocket(dai::CameraBoardSocket::LEFT);
@@ -117,6 +123,9 @@ Java_com_example_depthai_1android_1jni_1example_MainActivity_startDevice(JNIEnv 
         monoLeft->out.link(stereo->left);
         monoRight->out.link(stereo->right);
         stereo->disparity.link(xoutDepth->input);
+        stereo->rectifiedLeft.link(xoutRectLeft->input);
+        stereo->rectifiedRight.link(xoutRectRight->input);
+        stereo->confidenceMap.link(xoutConfidence->input);
     }
 
     device->startPipeline(pipeline);
@@ -132,8 +141,17 @@ Java_com_example_depthai_1android_1jni_1example_MainActivity_startDevice(JNIEnv 
     if(oakD) {
         // Output queue will be used to get the rgb frames from the output defined above
         qDepth = device->getOutputQueue("depth", 1, false);
+        qRectLeft = device->getOutputQueue("rectifiedLeft", 1, false);
+        qRectRight = device->getOutputQueue("rectifiedRight", 1, false);
+        qConf = device->getOutputQueue("confidenceMap", 1, false);
     }
 
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_example_depthai_1android_1jni_1example_MainActivity_hasStereoFromJNI(JNIEnv *env,
+                                                                              jobject thiz) {
+    return device && device->getConnectedCameras().size() == 3;
 }
 
 extern "C" JNIEXPORT jintArray JNICALL
@@ -184,12 +202,66 @@ Java_com_example_depthai_1android_1jni_1example_MainActivity_depthFromJNI(
     return result;
 }
 
+extern "C" JNIEXPORT jintArray JNICALL
+Java_com_example_depthai_1android_1jni_1example_MainActivity_rectifiedLeftFromJNI(JNIEnv *env,
+                                                                                  jobject thiz) {
+    bool oakD = device->getConnectedCameras().size() == 3;
+    if(!oakD || !qRectLeft) {
+        return env->NewIntArray(0);
+    }
+
+    auto inRectifiedLeft = qRectLeft->get<dai::ImgFrame>();
+    if(!inRectifiedLeft) {
+        return env->NewIntArray(0);
+    }
+
+    auto img = imgframeToCvMat(inRectifiedLeft);
+    return grayMatToBmpArray(env, img);
+}
+
+extern "C" JNIEXPORT jintArray JNICALL
+Java_com_example_depthai_1android_1jni_1example_MainActivity_rectifiedRightFromJNI(JNIEnv *env,
+                                                                                   jobject thiz) {
+    bool oakD = device->getConnectedCameras().size() == 3;
+    if(!oakD || !qRectRight) {
+        return env->NewIntArray(0);
+    }
+
+    auto inRectifiedRight = qRectRight->get<dai::ImgFrame>();
+    if(!inRectifiedRight) {
+        return env->NewIntArray(0);
+    }
+
+    auto img = imgframeToCvMat(inRectifiedRight);
+    return grayMatToBmpArray(env, img);
+}
+
+extern "C" JNIEXPORT jintArray JNICALL
+Java_com_example_depthai_1android_1jni_1example_MainActivity_confidenceMapFromJNI(JNIEnv *env,
+                                                                                   jobject thiz) {
+    bool oakD = device->getConnectedCameras().size() == 3;
+    if(!oakD || !qConf) {
+        return env->NewIntArray(0);
+    }
+
+    auto inConfidence = qConf->get<dai::ImgFrame>();
+    if(!inConfidence) {
+        return env->NewIntArray(0);
+    }
+
+    auto img = imgframeToCvMat(inConfidence);
+    return grayMatToBmpArray(env, img);
+}
+
 extern "C"
 JNIEXPORT void JNICALL
 Java_com_example_depthai_1android_1jni_1example_MainActivity_stopDevice(JNIEnv* env, jobject thiz) {
     if(qRgb) qRgb.reset();
     if(qDet) qDet.reset();
     if(qDepth) qDepth.reset();
+    if(qRectLeft) qRectLeft.reset();
+    if(qRectRight) qRectRight.reset();
+    if(qConf) qConf.reset();
     if(device) device.reset();
     detection_img.release();
 }

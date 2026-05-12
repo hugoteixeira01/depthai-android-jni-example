@@ -34,6 +34,23 @@ class MainActivity : AppCompatActivity() {
         private const val FRAME_PERIOD = 30L
 
         private val MODEL_LABEL_SEPARATOR = Regex("[_-]+")
+
+        enum class TaskType(val displayName: String) {
+            DETECTION("Detection"),
+            SEGMENTATION("Segmentation"),
+            CLASSIFICATION("Classification"),
+            POSE_ESTIMATION("Pose Estimation")
+        }
+
+        fun taskTypeFromModelName(modelName: String): TaskType {
+            return when {
+                modelName.contains(Regex("yolo|mobilenet|ssd", RegexOption.IGNORE_CASE)) -> TaskType.DETECTION
+                modelName.contains(Regex("fcn|unet|segmentation", RegexOption.IGNORE_CASE)) -> TaskType.SEGMENTATION
+                modelName.contains(Regex("resnet|inception|classification", RegexOption.IGNORE_CASE)) -> TaskType.CLASSIFICATION
+                modelName.contains(Regex("pose|openpose|keypoint", RegexOption.IGNORE_CASE)) -> TaskType.POSE_ESTIMATION
+                else -> TaskType.DETECTION // Default to detection if pattern unclear
+            }
+        }
     }
 
     private data class ModelOption(val label: String, val assetPath: String)
@@ -48,11 +65,14 @@ class MainActivity : AppCompatActivity() {
 
     private var modelOptions: List<ModelOption> = emptyList()
     private var streamOptions: List<StreamOption> = emptyList()
+    private var filteredModelOptions: List<ModelOption> = emptyList()
 
     private lateinit var previewImageView: ImageView
     private lateinit var leftArrow: ImageButton
     private lateinit var rightArrow: ImageButton
     private lateinit var streamLabel: TextView
+    private lateinit var taskSpinner: Spinner
+    private lateinit var modelSpinner: Spinner
 
     private lateinit var rgbBitmap: Bitmap
     private lateinit var rgbOverlayBitmap: Bitmap
@@ -65,6 +85,7 @@ class MainActivity : AppCompatActivity() {
     private var cameraConnected = false
     private var selectedModelIndex = AdapterView.INVALID_POSITION
     private var selectedStreamIndex = 0
+    private var selectedTaskIndex = 0
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -110,35 +131,50 @@ class MainActivity : AppCompatActivity() {
             cameraConnected = savedInstanceState.getBoolean("cameraConnected", false)
             selectedModelIndex = savedInstanceState.getInt("selectedModelIndex", AdapterView.INVALID_POSITION)
             selectedStreamIndex = savedInstanceState.getInt("selectedStreamIndex", 0)
+            selectedTaskIndex = savedInstanceState.getInt("selectedTaskIndex", 0)
         }
 
         val savedSelectedModelPath = savedInstanceState?.getString("selectedModelPath")
         modelOptions = findModelOptions()
+        
+        taskSpinner = binding.taskSelector
+        modelSpinner = binding.modelSelector
+        
+        // Setup task spinner
+        val taskAdapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, TaskType.values().map { it.displayName })
+        taskAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        taskSpinner.adapter = taskAdapter
+        taskSpinner.setSelection(selectedTaskIndex, false)
+        
+        updateFilteredModels()
+        
         selectedModelIndex = when {
-            modelOptions.isEmpty() -> AdapterView.INVALID_POSITION
+            filteredModelOptions.isEmpty() -> AdapterView.INVALID_POSITION
             savedSelectedModelPath != null -> {
-                val savedModelIndex = modelOptions.indexOfFirst { it.assetPath == savedSelectedModelPath }
+                val savedModelIndex = filteredModelOptions.indexOfFirst { it.assetPath == savedSelectedModelPath }
                 if (savedModelIndex != AdapterView.INVALID_POSITION) savedModelIndex else 0
             }
-            selectedModelIndex in modelOptions.indices -> selectedModelIndex
+            selectedModelIndex in filteredModelOptions.indices -> selectedModelIndex
             else -> 0
         }
 
-        val modelSpinner = binding.modelSelector
-        modelSpinner?.let { spinner: Spinner ->
-            val spinnerAdapter = ArrayAdapter(
-                this,
-                android.R.layout.simple_spinner_item,
-                modelOptions.map { it.label }
-            )
-            spinnerAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-            spinner.adapter = spinnerAdapter
-            if (selectedModelIndex != AdapterView.INVALID_POSITION) {
-                spinner.setSelection(selectedModelIndex, false)
+        // Task spinner listener
+        taskSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                selectedTaskIndex = position
+                updateFilteredModels()
+                updateModelSpinner()
             }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+
+        // Model spinner setup
+        modelSpinner.let { spinner: Spinner ->
+            updateModelSpinner()
             spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
-                    if (position in modelOptions.indices) {
+                    if (position in filteredModelOptions.indices) {
                         selectedModelIndex = position
                     }
                 }
@@ -169,7 +205,7 @@ class MainActivity : AppCompatActivity() {
                 if (cameraConnected) {
                     disconnectCamera()
                 } else {
-                    val selectedModelPath = modelOptions.getOrNull(selectedModelIndex)?.assetPath
+                    val selectedModelPath = filteredModelOptions.getOrNull(selectedModelIndex)?.assetPath
                     if (selectedModelPath != null) {
                         connectCamera(selectedModelPath)
                     }
@@ -181,7 +217,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (cameraConnected) {
-            val selectedModelPath = modelOptions.getOrNull(selectedModelIndex)?.assetPath
+            val selectedModelPath = filteredModelOptions.getOrNull(selectedModelIndex)?.assetPath
             if (selectedModelPath != null) {
                 connectCamera(selectedModelPath)
             } else {
@@ -214,7 +250,8 @@ class MainActivity : AppCompatActivity() {
         outState.putBoolean("cameraConnected", cameraConnected)
         outState.putInt("selectedModelIndex", selectedModelIndex)
         outState.putInt("selectedStreamIndex", selectedStreamIndex)
-        modelOptions.getOrNull(selectedModelIndex)?.assetPath?.let { selectedModelPath ->
+        outState.putInt("selectedTaskIndex", selectedTaskIndex)
+        filteredModelOptions.getOrNull(selectedModelIndex)?.assetPath?.let { selectedModelPath ->
             outState.putString("selectedModelPath", selectedModelPath)
         }
     }
@@ -239,12 +276,42 @@ class MainActivity : AppCompatActivity() {
         if (cameraConnected) {
             button.setText("Disconnect Camera")
             button.isEnabled = true
+            taskSpinner.isEnabled = false
             modelSpinner?.isEnabled = false
         } else {
-            val hasModelOptions = modelOptions.isNotEmpty()
+            val hasModelOptions = filteredModelOptions.isNotEmpty()
             button.setText(if (hasModelOptions) "Connect Camera" else "No model blobs found")
             button.isEnabled = hasModelOptions
+            taskSpinner.isEnabled = true
             modelSpinner?.isEnabled = hasModelOptions
+        }
+    }
+
+    private fun updateFilteredModels() {
+        val selectedTask = TaskType.values().getOrNull(selectedTaskIndex) ?: TaskType.DETECTION
+        filteredModelOptions = modelOptions.filter { modelOption ->
+            val modelName = modelOption.label
+            taskTypeFromModelName(modelName) == selectedTask
+        }
+    }
+
+    private fun updateModelSpinner() {
+        val spinnerAdapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_item,
+            filteredModelOptions.map { it.label }
+        )
+        spinnerAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        modelSpinner.adapter = spinnerAdapter
+        
+        selectedModelIndex = when {
+            filteredModelOptions.isEmpty() -> AdapterView.INVALID_POSITION
+            selectedModelIndex in filteredModelOptions.indices -> selectedModelIndex
+            else -> 0
+        }
+        
+        if (selectedModelIndex != AdapterView.INVALID_POSITION) {
+            modelSpinner.setSelection(selectedModelIndex, false)
         }
     }
 

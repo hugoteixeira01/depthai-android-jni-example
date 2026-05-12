@@ -70,3 +70,6 @@ fastlane/readme.md
 
 # vscode
 .vscode/
+
+# claude
+.claude/

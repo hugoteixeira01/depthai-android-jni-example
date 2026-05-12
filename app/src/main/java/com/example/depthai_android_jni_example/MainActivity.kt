@@ -3,8 +3,11 @@ package com.example.depthai_android_jni_example
 import android.content.res.AssetManager
 import android.graphics.Bitmap
 import android.os.Bundle
+import android.os.Debug
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.view.View
 import android.view.Window
 import android.view.WindowManager
 import android.widget.AdapterView
@@ -87,6 +90,10 @@ class MainActivity : AppCompatActivity() {
     private var selectedStreamIndex = 0
     private var selectedTaskIndex = 0
 
+    private lateinit var metricsOverlay: TextView
+    private val frameTimestamps = mutableListOf<Long>()
+    private var lastMetricsUpdateTime = 0L
+
     private val handler = Handler(Looper.getMainLooper())
 
     private val frameRunnable = object : Runnable {
@@ -98,6 +105,12 @@ class MainActivity : AppCompatActivity() {
                     if (currentStream != null && frame != null && frame.isNotEmpty()) {
                         currentStream.bitmap.setPixels(frame, 0, currentStream.width, 0, 0, currentStream.width, currentStream.height)
                         previewImageView.setImageBitmap(currentStream.bitmap)
+                        recordFrame()
+                        val now = SystemClock.elapsedRealtime()
+                        if (now - lastMetricsUpdateTime >= 1000L) {
+                            lastMetricsUpdateTime = now
+                            metricsOverlay.text = "FPS: ${"%.1f".format(currentFps())} | RAM: ${"%.0f".format(nativeMemoryMB())} MB"
+                        }
                     }
                 }
 
@@ -118,6 +131,7 @@ class MainActivity : AppCompatActivity() {
         leftArrow = binding.leftArrow
         rightArrow = binding.rightArrow
         streamLabel = binding.streamLabel
+        metricsOverlay = binding.metricsOverlay
 
         rgbBitmap = Bitmap.createBitmap(RGB_WIDTH, RGB_HEIGHT, Bitmap.Config.ARGB_8888)
         rgbOverlayBitmap = Bitmap.createBitmap(RGB_WIDTH, RGB_HEIGHT, Bitmap.Config.ARGB_8888)
@@ -270,7 +284,24 @@ class MainActivity : AppCompatActivity() {
         cameraConnected = false
         streamOptions = createStreamOptions(false)
         selectedStreamIndex = 0
+        frameTimestamps.clear()
+        lastMetricsUpdateTime = 0L
     }
+
+    private fun recordFrame() {
+        val now = SystemClock.elapsedRealtime()
+        frameTimestamps.add(now)
+        if (frameTimestamps.size > 30) frameTimestamps.removeAt(0)
+    }
+
+    private fun currentFps(): Double {
+        if (frameTimestamps.size < 2) return 0.0
+        val elapsed = frameTimestamps.last() - frameTimestamps.first()
+        return if (elapsed > 0) 1000.0 * (frameTimestamps.size - 1) / elapsed else 0.0
+    }
+
+    private fun nativeMemoryMB(): Float =
+        Debug.getNativeHeapAllocatedSize().toFloat() / (1024 * 1024)
 
     private fun updateControls(button: Button, modelSpinner: Spinner?) {
         if (cameraConnected) {
@@ -285,6 +316,7 @@ class MainActivity : AppCompatActivity() {
             taskSpinner.isEnabled = true
             modelSpinner?.isEnabled = hasModelOptions
         }
+        metricsOverlay.visibility = if (cameraConnected) View.VISIBLE else View.GONE
     }
 
     private fun updateFilteredModels() {
